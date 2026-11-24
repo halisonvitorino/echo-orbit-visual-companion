@@ -1,7 +1,8 @@
 // Browser-only: imported dynamically after mount.
 import * as THREE from "three";
+import { analyzeVoice } from "./audio-analysis";
 
-export type OrbInput = { rms: number; bands: number[]; state: string };
+export type OrbInput = { rms: number; bands: number[]; state: string; pitch?: number };
 
 const noise = `
 vec3 mod289(vec3 x){return x-floor(x*(1./289.))*289.;}
@@ -20,6 +21,16 @@ vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=n
 vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);m=m*m;
 return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}`;
 
+const palette = `
+vec3 voicePalette(float tone){
+  vec3 grave=vec3(1.0,0.32,0.06);
+  vec3 medio=vec3(0.58,0.16,1.0);
+  vec3 agudo=vec3(0.12,0.85,1.0);
+  return tone<0.5
+    ? mix(grave,medio,smoothstep(0.0,0.5,tone))
+    : mix(medio,agudo,smoothstep(0.5,1.0,tone));
+}`;
+
 export function createOrb(canvas: HTMLCanvasElement, read: () => OrbInput) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -28,8 +39,11 @@ export function createOrb(canvas: HTMLCanvasElement, read: () => OrbInput) {
   camera.position.z = 4.2;
 
   const uniforms = {
-    uTime: { value: 0 }, uAmp: { value: 0 }, uLow: { value: 0 }, uHigh: { value: 0 },
-    uHue: { value: 0 },
+    uTime: { value: 0 },
+    uAmp: { value: 0 },
+    uLow: { value: 0 },
+    uHigh: { value: 0 },
+    uTone: { value: 0.35 },
   };
   const vert = `${noise}
   uniform float uTime,uAmp,uLow,uHigh; varying float vD; varying vec3 vN;
@@ -39,23 +53,38 @@ export function createOrb(canvas: HTMLCanvasElement, read: () => OrbInput) {
     p+=normal*n*(1.0+uAmp*1.5); vD=n; vN=normalize(normalMatrix*normal);
     vec4 mv=modelViewMatrix*vec4(p,1.); gl_PointSize=(1.6+uAmp*2.5)*(4.0/-mv.z); gl_Position=projectionMatrix*mv;
   }`;
-  const frag = `uniform float uAmp,uHue; varying float vD; varying vec3 vN;
+  const frag = `${palette}
+  uniform float uAmp,uTone; varying float vD; varying vec3 vN;
   void main(){
     float d=length(gl_PointCoord-.5); if(d>.5) discard;
     float k=clamp(vD*2.+.5,0.,1.);
-    vec3 orange=vec3(1.0,0.45,0.1), violet=vec3(0.55,0.2,1.0), cyan=vec3(0.2,0.85,1.0);
-    vec3 c=mix(mix(orange,violet,k),cyan,uHue);
+    vec3 c=voicePalette(clamp(uTone+(k-.5)*.3,0.,1.));
     float rim=pow(1.-abs(vN.z),1.5);
     float a=(0.35+rim*0.65)*(1.-d*2.)*(0.7+uAmp*0.8);
     gl_FragColor=vec4(c*(1.0+uAmp),a);
   }`;
   const geo = new THREE.IcosahedronGeometry(1, 64);
-  const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: frag,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: vert,
+    fragmentShader: frag,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
   const points = new THREE.Points(geo, mat);
-  const wire = new THREE.Mesh(geo, new THREE.ShaderMaterial({ uniforms, vertexShader: vert,
-    fragmentShader: `uniform float uAmp; void main(){gl_FragColor=vec4(0.7,0.35,1.0,0.04+uAmp*0.08);}`,
-    wireframe: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const wireMat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: vert,
+    fragmentShader: `${palette}
+      uniform float uAmp,uTone;
+      void main(){gl_FragColor=vec4(voicePalette(uTone),0.04+uAmp*0.08);}`,
+    wireframe: true,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const wire = new THREE.Mesh(geo, wireMat);
   scene.add(points, wire);
 
   const resize = () => {
@@ -65,24 +94,33 @@ export function createOrb(canvas: HTMLCanvasElement, read: () => OrbInput) {
   resize(); window.addEventListener("resize", resize);
 
   const clock = new THREE.Clock(); let raf = 0;
-  const s = { amp: 0, low: 0, high: 0, hue: 0 };
+  const s = { amp: 0, low: 0, high: 0, tone: 0.35 };
   const loop = () => {
     const dt = clock.getDelta(); const inp = read();
-    const b = inp.bands.length ? inp.bands : [0];
-    const half = Math.max(1, Math.floor(b.length / 2));
-    const low = b.slice(0, half).reduce((a, v) => a + v, 0) / half;
-    const high = b.slice(half).reduce((a, v) => a + v, 0) / Math.max(1, b.length - half);
+    const voice = analyzeVoice(inp.bands, inp.pitch);
     const lerp = (c: number, n: number, f: number) => c + (n - c) * f;
-    s.amp = lerp(s.amp, inp.rms, 0.2); s.low = lerp(s.low, low, 0.2); s.high = lerp(s.high, high, 0.2);
-    s.hue = lerp(s.hue, inp.state === "listening" ? 1 : 0, 0.05);
+    s.amp = lerp(s.amp, inp.rms, 0.2);
+    s.low = lerp(s.low, voice.low, 0.2);
+    s.high = lerp(s.high, voice.high, 0.2);
+    s.tone = lerp(s.tone, inp.state === "listening" ? 1 : voice.tone, 0.08);
     const speed = inp.state === "thinking" ? 3 : 1 + s.amp * 3;
     uniforms.uTime.value += dt * speed;
-    uniforms.uAmp.value = s.amp; uniforms.uLow.value = s.low; uniforms.uHigh.value = s.high; uniforms.uHue.value = s.hue;
+    uniforms.uAmp.value = s.amp;
+    uniforms.uLow.value = s.low;
+    uniforms.uHigh.value = s.high;
+    uniforms.uTone.value = s.tone;
     const breathe = 1 + Math.sin(clock.elapsedTime * 1.2) * 0.015 + s.amp * 0.12;
     points.scale.setScalar(breathe); wire.scale.setScalar(breathe);
     points.rotation.y += dt * (0.08 + s.amp * 0.4); wire.rotation.y = points.rotation.y;
     renderer.render(scene, camera); raf = requestAnimationFrame(loop);
   };
   loop();
-  return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); renderer.dispose(); geo.dispose(); };
+  return () => {
+    cancelAnimationFrame(raf);
+    window.removeEventListener("resize", resize);
+    renderer.dispose();
+    geo.dispose();
+    mat.dispose();
+    wireMat.dispose();
+  };
 }

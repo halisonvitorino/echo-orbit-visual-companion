@@ -19,6 +19,11 @@ export const Route = createFileRoute("/")({
 const STATES = ["idle", "listening", "thinking", "speaking"] as const;
 const LABEL: Record<string, string> = { idle: "Em espera", listening: "Ouvindo", thinking: "Pensando", speaking: "Falando" };
 const PHRASES = ["Bom dia, senhor.", "Todos os sistemas estão operacionais.", "A previsão indica céu limpo hoje.", "Posso ajudar com mais alguma coisa?"];
+const VOICES = [
+  { id: "grave", label: "Grave", pitch: 90, center: 1 },
+  { id: "medio", label: "Médio", pitch: 170, center: 3.5 },
+  { id: "agudo", label: "Agudo", pitch: 280, center: 6.5 },
+] as const;
 
 function Index() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,6 +33,7 @@ function Index() {
   const [url, setUrl] = useState("ws://localhost:8000/ws");
   const [conn, setConn] = useState<"off" | "connecting" | "on">("off");
   const [sim, setSim] = useState(true);
+  const [voice, setVoice] = useState<(typeof VOICES)[number]["id"]>("medio");
   const simSpeak = useRef(0);
 
   const setSt = (s: string) => { data.current.state = s; setState(s); };
@@ -53,7 +59,12 @@ function Index() {
         try {
           const m = JSON.parse(e.data);
           if (m.type === "state") setSt(m.value);
-          else if (m.type === "audio") { data.current.rms = m.rms ?? 0; data.current.bands = m.bands ?? []; }
+          else if (m.type === "audio") {
+            data.current.rms = m.rms ?? 0;
+            data.current.bands = m.bands ?? [];
+            if (typeof m.pitch === "number" && Number.isFinite(m.pitch) && m.pitch > 0) data.current.pitch = m.pitch;
+            else delete data.current.pitch;
+          }
           else if (m.type === "caption") setCaption(m.text ?? "");
         } catch { /* ignore */ }
       };
@@ -70,17 +81,22 @@ function Index() {
       const t = (performance.now() - t0) / 1000; const d = data.current;
       if (d.state === "speaking" && performance.now() < simSpeak.current) {
         const env = Math.max(0, Math.sin(t * 9) * 0.5 + Math.sin(t * 23) * 0.3 + 0.35);
+        const profile = VOICES.find((item) => item.id === voice) ?? VOICES[1];
         d.rms = Math.min(1, env * (0.6 + Math.random() * 0.4));
-        d.bands = Array.from({ length: 8 }, (_, i) => Math.min(1, d.rms * (1.2 - i * 0.12) * (0.5 + Math.random() * 0.7)));
+        d.pitch = profile.pitch * (1 + Math.sin(t * 3.1) * 0.06);
+        d.bands = Array.from({ length: 8 }, (_, i) => {
+          const frequencyWeight = Math.exp(-Math.pow(i - profile.center, 2) / 4);
+          return Math.min(1, d.rms * frequencyWeight * (0.75 + Math.random() * 0.35));
+        });
       } else {
         if (d.state === "speaking") { setSt("idle"); setCaption(""); }
-        d.rms = 0; d.bands = [];
+        d.rms = 0; d.bands = []; delete d.pitch;
       }
       raf = requestAnimationFrame(tick);
     };
     tick();
     return () => cancelAnimationFrame(raf);
-  }, [sim]);
+  }, [sim, voice]);
 
   const speak = () => {
     const p = PHRASES[Math.floor(Math.random() * PHRASES.length)] ?? "";
@@ -109,6 +125,15 @@ function Index() {
         {sim ? (
           <>
             <button onClick={speak} className="rounded-lg bg-primary px-3 py-2 text-primary-foreground">Simular fala</button>
+            <div className="flex items-center gap-1 rounded-lg border border-border p-1" aria-label="Tom da voz simulada">
+              <span className="px-2 text-muted-foreground">Tom</span>
+              {VOICES.map((item) => (
+                <button key={item.id} onClick={() => setVoice(item.id)} aria-pressed={voice === item.id}
+                  className={`rounded-md px-2 py-1 ${voice === item.id ? "bg-secondary" : "hover:bg-secondary"}`}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
             {STATES.filter((s) => s !== "speaking").map((s) => (
               <button key={s} onClick={() => { setSt(s); setCaption(""); }}
                 className={`rounded-lg px-3 py-2 ${state === s ? "bg-secondary" : "hover:bg-secondary"}`}>{LABEL[s]}</button>

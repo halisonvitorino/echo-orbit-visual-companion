@@ -158,3 +158,13 @@
   background: radial-gradient(circle at 50% 45%, oklch(0.6 0.22 300 / 0.25), transparent 45%),
     radial-gradient(circle at 50% 50%, oklch(0.72 0.18 50 / 0.12), transparent 60%);
 }
+
+.hud-grid {
+  background-image: linear-gradient(oklch(1 0 0 / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 3%) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+.hud-corners { clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
+@keyframes hud-spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+.hud-spin { animation: hud-spin 40s linear infinite; border-top-color: var(--primary); }
+.hud-spin-rev { animation: hud-spin 60s linear infinite reverse; }
